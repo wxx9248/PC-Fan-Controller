@@ -1,0 +1,24 @@
+[package]
+name = "fan-controllerd"
+version = "1.0.0"
+edition = "2024"
+# Edition 2024 needs rustc 1.85 or newer. Debian trixie ships exactly 1.85.1,
+# which is the oldest toolchain this is built with, so state the floor rather
+# than let it fail as a confusing compile error on an older one.
+rust-version = "1.85"
+description = "NAS-side daemon: maps HDD temperatures to fan speed over USB serial"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+env_logger = "0.11"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+# The default `libudev` feature only serves port enumeration, which this daemon
+# never does. Leaving it on makes libudev-dev and pkg-config build requirements.
+serialport = { version = "4", default-features = false }
+toml = "1"
+
+[profile.release]
+strip = true
+lto = true

@@ -1,0 +1,13 @@
+# Optional convenience symlink /dev/@DEVICE_SYMLINK@ for the fan controller. The
+# /dev/serial/by-id/ path already works without this rule, so nothing depends on
+# it.
+#
+# Render it with your controller's serial, which is the chip's factory MAC:
+#   make CONTROLLER_SERIAL=AA:BB:CC:DD:EE:FF
+# The serial is visible in the /dev/serial/by-id/ name, or via:
+#   udevadm info -a /dev/ttyACM0 | grep '{serial}'
+# Matching on the serial picks the right board even with several ESP32s attached.
+#
+# Installed to @UDEVRULESDIR@/99-fan-controller.rules. After a manual install:
+#   udevadm control --reload && udevadm trigger
+SUBSYSTEM=="tty", ATTRS{idVendor}=="@USB_VENDOR_ID@", ATTRS{idProduct}=="@USB_PRODUCT_ID@", ATTRS{serial}=="@CONTROLLER_SERIAL@", SYMLINK+="@DEVICE_SYMLINK@"

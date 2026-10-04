@@ -1,0 +1,106 @@
+name: Update Firmware Components
+
+# Dependabot has no ecosystem for the ESP-IDF component registry, so the firmware
+# cannot be covered by .github/dependabot.yml. This does the same job for it: it
+# asks the component manager to re-solve firmware/main/idf_component.yml and opens
+# a pull request if firmware/dependencies.lock moved.
+#
+# It only moves the lock within the constraint already in the manifest. A new major
+# version needs that constraint widened by hand, which is the one thing Dependabot
+# would have done for us.
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-firmware-components:
+    name: Update Firmware Components
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checks-out repository
+        uses: actions/checkout@v7
+
+      # Re-solving runs a full CMake configure, and the firmware refuses to
+      # configure without a real embedded page: it checks the file exists and is
+      # not zero bytes. So the page has to be built here even though this job
+      # never flashes anything.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: frontend/package.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Build the status page the firmware embeds
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      # The IDF image runs as root unless told otherwise. Running it as the runner's
+      # own user keeps root out of the build, and leaves nothing in the workspace
+      # the runner cannot clean up. git and the component manager need a writable
+      # HOME, which an arbitrary uid inside the image does not have.
+      - name: Resolve the runner's user
+        id: runner
+        run: echo "user=$(id -u):$(id -g)" >> "$GITHUB_OUTPUT"
+
+      # Same action and same IDF version as the build workflow, so the version
+      # that resolves the lock is the version that compiles against it.
+      - name: Re-solve the component dependencies
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.1
+          target: esp32c3
+          path: firmware
+          command: idf.py update-dependencies
+          extra_docker_args: --user ${{ steps.runner.outputs.user }} -e HOME=/tmp
+
+      - name: Report what moved
+        id: changed
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- firmware/dependencies.lock; then
+            echo "nothing to update"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git --no-pager diff -- firmware/dependencies.lock
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open the component-update pull request
+        if: steps.changed.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          # The IDF build also writes managed_components/ and build/, both
+          # gitignored, but name the one file that matters rather than trusting
+          # that.
+          add-paths: firmware/dependencies.lock
+          branch: chore/update-firmware-components
+          delete-branch: true
+          title: "Dependency Updates: firmware components"
+          commit-message: |
+            Dependency Updates: re-solve firmware component lock
+
+            idf.py update-dependencies moved firmware/dependencies.lock within the
+            constraints in main/idf_component.yml. Opened by
+            update-firmware-components.yaml.
+          body: |
+            `idf.py update-dependencies` re-solved
+            `firmware/dependencies.lock` against the ESP-IDF component registry,
+            using the same IDF version the build workflow pins.
+
+            The diff is in the workflow log. Only the lock moved; widening a
+            constraint in `firmware/main/idf_component.yml` for a new major version
+            is still a manual decision.
+          labels: dependencies

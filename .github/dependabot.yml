@@ -1,0 +1,32 @@
+version: 2
+
+updates:
+  # The daemon. Cargo.lock is committed, so a bump arrives as a lockfile change
+  # that the build workflow compiles and tests before anyone merges it.
+  - package-ecosystem: "cargo"
+    directory: "/daemon"
+    schedule:
+      interval: "daily"
+    commit-message:
+      prefix: "Dependency Updates"
+
+  # The status page. Its lockfile is pnpm lockfileVersion 9, which Dependabot
+  # reads through the npm ecosystem.
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "daily"
+    commit-message:
+      prefix: "Dependency Updates"
+
+  # The firmware is absent on purpose. Its one dependency, espressif/mdns, comes
+  # from the ESP-IDF component registry at components.espressif.com, and
+  # Dependabot has no ecosystem for it. update-firmware-components.yaml covers it
+  # instead, by asking the component manager itself to re-solve the lock.
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    commit-message:
+      prefix: "GitHub Actions Updates"

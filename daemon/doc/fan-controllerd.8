@@ -1,0 +1,111 @@
+.TH FAN\-CONTROLLERD 8 "2026-10-04" "fan-controllerd 1.0.0" "System Manager's Manual"
+.SH NAME
+fan\-controllerd \- map hard\-drive temperatures to fan speed over USB serial
+.SH SYNOPSIS
+.B fan\-controllerd
+.RB [ \-\-config
+.IR path ]
+.RB [ \-\-once ]
+.br
+.B fan\-controllerd
+.BR \-\-help " | " \-\-version
+.SH DESCRIPTION
+.B fan\-controllerd
+reads the temperature of each configured drive from the kernel
+.B drivetemp
+hwmon, takes the hottest, maps it through a piecewise\-linear curve, and sends
+the resulting duty to an ESP32\-C3 fan controller over USB serial. It repeats
+this every
+.I poll_interval_s
+seconds.
+.PP
+The controller keeps its own failsafe and drives the fan at full speed whenever
+it stops hearing from the host, so stopping this daemon raises airflow rather
+than losing it. For that to hold, the daemon refuses to start if the configured
+poll interval plus the bounded serial exchange could exceed half the
+controller's failsafe timeout. The firmware reports that timeout itself, and
+when it differs from
+.IR controller_failsafe_timeout_s ,
+the daemon checks the poll interval against the real value each time it
+connects, and exits if the interval no longer fits.
+.PP
+A drive whose temperature cannot be read is an error, not a missing sample: the
+daemon commands 100%. There is no fallback temperature source, so the
+.B drivetemp
+module is a hard requirement. Drives behind a USB bridge and NVMe drives cannot
+be monitored.
+.PP
+Each cycle also reads the controller's status before sending the new duty, and
+checks it three ways: the duty being applied should be the one last commanded,
+the failsafe should not have taken over since, and the tachometer should not be
+below what that duty produces. Separately, the daemon reports any drive at or
+above its own
+.I temp1_max
+or
+.IR temp1_crit .
+All of these are reported, not acted on: more duty cannot revive a dead fan,
+and a hot drive already gets whatever the curve gives for its temperature.
+.SH OPTIONS
+.TP
+.BI \-\-config " path"
+Read configuration from
+.IR path
+instead of
+.IR /etc/fan\-controllerd.toml .
+.TP
+.B \-\-once
+Run a single measure\-and\-control cycle with verbose output, then exit. This is
+not a dry run: it really commands the fan. Because the daemon then exits, the
+controller's failsafe takes the fan to full speed once its timeout elapses. The
+serial port is opened exclusively, so stop the service first.
+.TP
+.BR \-\-help ", " \-h
+Print a usage summary to standard output and exit 0.
+.TP
+.BR \-\-version ", " \-V
+Print the version and exit 0.
+.SH EXIT STATUS
+0 after
+.BR \-\-help ,
+.B \-\-version
+or a completed
+.B \-\-once
+cycle; 2 on a usage error; 1 when the configuration is invalid, when the
+controller's own failsafe timeout leaves no room for the configured poll
+interval, or on any other failure that stops it. Otherwise it runs until
+signalled.
+.SH ENVIRONMENT
+.TP
+.B RUST_LOG
+Log filter, in env_logger syntax. The default is
+.BR info ,
+or
+.B debug
+with
+.BR \-\-once .
+Under systemd every line carries its syslog priority, so
+.B journalctl \-p warning \-u fan\-controllerd
+shows only the problems.
+.SH FILES
+.TP
+.I /etc/fan\-controllerd.toml
+Configuration. Rendered with placeholder device and disk identifiers unless the
+build was given real ones, and they must be right before the daemon is useful.
+.TP
+.I /usr/share/doc/fan\-controllerd/examples/
+In the Debian package only: a copy of the annotated configuration as shipped, and an
+optional udev rule that gives the controller a stable
+.I /dev/fan\-controller
+symlink.
+.SH SEE ALSO
+.BR systemctl (1),
+.BR journalctl (1),
+.BR udevadm (8)
+.PP
+The serial and HTTP interfaces are specified in
+.I PROTOCOL.md
+at https://github.com/wxx9248/PC\-Fan\-Controller, which a Debian package built
+from the full repository also installs under
+.IR /usr/share/doc/fan\-controllerd/ .
+.SH AUTHOR
+wxx9248 <wxx9248@gmail.com>

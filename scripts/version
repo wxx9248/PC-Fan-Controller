@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Single source of truth for the product version, shared by all three components.
+
+The VERSION file at the repository root is authoritative. Two of the three
+components cannot read it at build time, so their literals are kept in step here
+and `check` fails CI if any has drifted:
+
+  daemon          daemon/Cargo.toml                [package] version
+  daemon          daemon/Cargo.lock                the fan-controllerd entry
+  daemon .deb     daemon/targets/debian/changelog  topmost entry
+  daemon manual   daemon/doc/fan-controllerd.8     .TH line (and its date)
+  status page     frontend/package.json            "version"
+  firmware        reads VERSION directly from CMake, so nothing to sync
+
+Cargo.lock is on the list because it records the crate's own version: change
+Cargo.toml alone and every `cargo build --locked` refuses to run.
+
+The firmware's PROTOCOL_VERSION is deliberately NOT touched. That number is the
+wire contract the daemon gates on (it refuses a controller whose major version
+differs), so tying it to the product version would turn a cosmetic release into a
+refusal to drive perfectly good firmware.
+"""
+import datetime
+import email.utils
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+VERSION_FILE = ROOT / "VERSION"
+CARGO = ROOT / "daemon" / "Cargo.toml"
+CARGO_LOCK = ROOT / "daemon" / "Cargo.lock"
+CHANGELOG = ROOT / "daemon" / "targets" / "debian" / "changelog"
+MANPAGE = ROOT / "daemon" / "doc" / "fan-controllerd.8"
+PACKAGE_JSON = ROOT / "frontend" / "package.json"
+FIRMWARE_CMAKE = ROOT / "firmware" / "CMakeLists.txt"
+
+SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+MAINTAINER = "wxx9248 <wxx9248@gmail.com>"
+
+# Where each literal lives: how to find it, and how to rewrite it.
+CARGO_VERSION = r'^version = "([^"]+)"'
+LOCK_VERSION = r'^name = "fan-controllerd"\nversion = "([^"]+)"'
+PACKAGE_VERSION = r'^\s*"version":\s*"([^"]+)"'
+CHANGELOG_VERSION = r"^fan-controllerd \(([^)]+)\)"
+MANPAGE_VERSION = r'^\.TH \S+ 8 "[^"]*" "fan-controllerd ([^"]+)"'
+
+
+def read_version() -> str:
+    raw = VERSION_FILE.read_text(encoding="utf-8").strip()
+    if not SEMVER.match(raw):
+        sys.exit(f"VERSION holds {raw!r}, which is not MAJOR.MINOR.PATCH")
+    return raw
+
+
+def bump(version: str, mode: str) -> str:
+    major, minor, patch = (int(p) for p in version.split("."))
+    if mode == "major":
+        return f"{major + 1}.0.0"
+    if mode == "minor":
+        return f"{major}.{minor + 1}.0"
+    if mode == "patch":
+        return f"{major}.{minor}.{patch + 1}"
+    sys.exit(f"unknown increment mode {mode!r}; expected major, minor or patch")
+
+
+def one_sub(path: Path, pattern: str, replacement: str) -> str:
+    """Substitute exactly once, or fail. A silently non-matching edit that gets
+    reported as success is the failure mode this guards against."""
+    text = path.read_text(encoding="utf-8")
+    new, count = re.subn(pattern, replacement, text, flags=re.M)
+    if count != 1:
+        sys.exit(f"{path}: pattern {pattern!r} matched {count} times, expected 1")
+    path.write_text(new, encoding="utf-8")
+    return new
+
+
+def found(path: Path, pattern: str) -> str:
+    match = re.search(pattern, path.read_text(encoding="utf-8"), flags=re.M)
+    if not match:
+        sys.exit(f"{path}: no version found with {pattern!r}")
+    return match.group(1)
+
+
+def observed() -> dict:
+    sites = {
+        CARGO: CARGO_VERSION,
+        CARGO_LOCK: LOCK_VERSION,
+        PACKAGE_JSON: PACKAGE_VERSION,
+        CHANGELOG: CHANGELOG_VERSION,
+        MANPAGE: MANPAGE_VERSION,
+    }
+    return {str(path.relative_to(ROOT)): found(path, pattern) for path, pattern in sites.items()}
+
+
+def cmd_check() -> int:
+    want = read_version()
+    if "VERSION" not in FIRMWARE_CMAKE.read_text(encoding="utf-8"):
+        print(f"FAIL {FIRMWARE_CMAKE.relative_to(ROOT)} no longer reads VERSION", file=sys.stderr)
+        return 1
+    bad = False
+    for where, got in observed().items():
+        status = "ok  " if got == want else "FAIL"
+        if got != want:
+            bad = True
+        print(f"{status} {where}: {got}")
+    print(f"{'ok  '} firmware/CMakeLists.txt: reads VERSION at configure time")
+    if bad:
+        print(f"\nVERSION says {want}. Run: scripts/version sync", file=sys.stderr)
+    return 1 if bad else 0
+
+
+def write_components(version: str) -> None:
+    """Bring every literal in step with `version`."""
+    one_sub(CARGO, r'^version = "[^"]+"', f'version = "{version}"')
+    one_sub(CARGO_LOCK, r'^(name = "fan-controllerd"\nversion = )"[^"]+"', rf'\g<1>"{version}"')
+    one_sub(PACKAGE_JSON, r'^(\s*)"version": "[^"]+"', rf'\g<1>"version": "{version}"')
+
+    # The manual's date is the date of the version it documents, so both move
+    # together, and only when the version actually changes.
+    if found(MANPAGE, MANPAGE_VERSION) != version:
+        today = datetime.date.today().isoformat()
+        one_sub(
+            MANPAGE,
+            r'^(\.TH \S+ 8 )"[^"]*" "fan-controllerd [^"]+"',
+            rf'\g<1>"{today}" "fan-controllerd {version}"',
+        )
+
+    # A Debian changelog is append-only history, so a new version prepends an
+    # entry rather than rewriting the last one, and an unchanged one adds none.
+    previous = found(CHANGELOG, CHANGELOG_VERSION)
+    if previous != version:
+        date = email.utils.format_datetime(datetime.datetime.now().astimezone())
+        entry = (
+            f"fan-controllerd ({version}) unstable; urgency=medium\n"
+            f"\n"
+            f"  * Release {version} (was {previous}).\n"
+            f"\n"
+            f" -- {MAINTAINER}  {date}\n"
+            f"\n"
+        )
+        CHANGELOG.write_text(entry + CHANGELOG.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args:
+        args = ["current"]
+    if args[0] == "current":
+        print(read_version())
+        return 0
+    if args[0] == "check":
+        return cmd_check()
+    if args[0] == "sync":
+        current = read_version()
+        write_components(current)
+        print(f"synced components to {current}")
+        return 0
+    if args[0] == "bump":
+        if len(args) != 2:
+            sys.exit("usage: version bump <major|minor|patch>")
+        new = bump(read_version(), args[1])
+        VERSION_FILE.write_text(new + "\n", encoding="utf-8")
+        write_components(new)
+        print(new)
+        return 0
+    sys.exit("usage: version [current|check|sync|bump <major|minor|patch>]")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

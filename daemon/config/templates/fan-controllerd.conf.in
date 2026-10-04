@@ -1,0 +1,4 @@
+# The daemon reads drive temperatures only from the kernel @KERNEL_MODULE@ hwmon.
+# With the module absent it has no temperature source at all, so it treats every
+# drive as unreadable and commands 100% fan.
+@KERNEL_MODULE@

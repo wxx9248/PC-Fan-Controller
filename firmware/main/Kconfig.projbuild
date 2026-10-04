@@ -1,0 +1,49 @@
+menu "Fan Controller Configuration"
+
+    config FAN_WIFI_SSID
+        string "WiFi SSID"
+        default ""
+        help
+            SSID of the WLAN to join for the HTTP status page. Leave empty
+            to run without WiFi (USB serial control is unaffected).
+            Set this in sdkconfig.secrets, not in sdkconfig.defaults.
+
+    config FAN_WIFI_PASSWORD
+        string "WiFi password"
+        default ""
+        help
+            WPA2 passphrase. Empty means an open network.
+            Set this in sdkconfig.secrets, not in sdkconfig.defaults.
+
+    config FAN_HOSTNAME
+        string "Hostname (mDNS)"
+        default "fan-controller"
+        help
+            The device is reachable at http://<hostname>.local when WiFi
+            is connected.
+
+    config FAN_FAILSAFE_TIMEOUT_S
+        int "Failsafe timeout (seconds)"
+        range 5 600
+        default 30
+        help
+            If no PWM command arrives over USB serial for this long, the fan
+            is forced to 100% until the host resumes sending them. Only PWM
+            counts: STATUS, VER and PING deliberately do not reset the timer,
+            because they prove the link is alive without proving the host is
+            still controlling the fan. fan-controllerd requires its poll
+            interval plus its 3 s serial exchange budget to be at most half of
+            this value. STATUS reports the value as FAILSAFE_TIMEOUT, so the
+            daemon checks its own setting against it when it connects.
+
+    config FAN_BOOT_DUTY_PERCENT
+        int "Fan duty at boot (%)"
+        range 50 100
+        default 100
+        help
+            Duty applied from power-up until the first PWM command from the
+            host, and after every reboot. The range starts at 50% because the
+            drives are unprotected for the whole failsafe timeout at this duty:
+            0 would have meant no airflow at all for up to 600 s on every boot.
+
+endmenu

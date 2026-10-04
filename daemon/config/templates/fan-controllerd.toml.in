@@ -1,0 +1,106 @@
+# Rendered by scripts/render-config into build/<target>/fan-controllerd.toml, and
+# installed as @CONFIG_FILE@. Every value here comes from config/targets/: edit
+# the value set, not a rendered copy.
+#
+# The device and disk identifiers are placeholders unless they were given when
+# rendering (make CONTROLLER_SERIAL=... DISKS='[...]'), and must be replaced with
+# the ones for this machine. The tuning values are real measurements from one
+# particular fan and array, so re-measure yours. Figures quoted in the comments
+# below describe those shipped defaults; a target that overrides them should
+# revisit the surrounding prose too.
+
+# Immutable controller path: survives replugging into any USB port and is
+# unambiguous with multiple ttyACM devices present. The name ends in the chip's
+# factory MAC, which is what CONTROLLER_SERIAL fills in when rendering.
+# Discover yours with:  ls /dev/serial/by-id/
+device = "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_@CONTROLLER_SERIAL@-if00"
+
+# Seconds between temperature polls. The gap between two PWM commands is this
+# plus the STATUS exchange that sits between them (bounded at 3 s), and that
+# total must stay at or below half the firmware's failsafe timeout
+# (CONFIG_FAN_FAILSAFE_TIMEOUT_S, mirrored just below). The daemon refuses to
+# start otherwise, so raising the poll interval means raising the firmware's
+# timeout as well, and reflashing it. The firmware reports its real timeout, and
+# on connecting the daemon checks the poll interval against that value too.
+poll_interval_s = @POLL_INTERVAL_S@
+controller_failsafe_timeout_s = @CONTROLLER_FAILSAFE_TIMEOUT_S@
+
+# Disks to monitor, as immutable names under /dev/disk/by-id/ (independent of
+# sdX numbering and SATA port). Discover yours with:  ls /dev/disk/by-id/
+# Prefer the ata-<MODEL>_<SERIAL> or wwn-0x… names; avoid the -partN entries.
+# List only the drives sitting in this fan's airflow. One elsewhere in the case
+# contributes no heat the fan can remove, but it can still drag the curve up.
+# Each must be native SATA: the kernel drivetemp hwmon is the only temperature
+# source and it cannot bind to a drive behind a USB bridge. NVMe drives are not
+# supported either, and read as unreadable. Load the module and
+# persist it in @MODULESLOADDIR@/fan-controllerd.conf. A listed drive whose
+# temperature cannot be read is an emergency, not a fallback: the daemon
+# commands 100%.
+disks = @DISKS@
+
+# Fan curve: [drive temperature °C, fan PWM %] points, ascending temperatures.
+# Linear interpolation between points; clamped outside the range. The hottest
+# monitored drive drives the curve. Temperatures come from the kernel
+# `drivetemp` hwmon, which is required: there is no fallback, and a drive whose
+# temperature cannot be read is treated as an emergency (100% fan).
+#
+# Tuned against this fan's measured response (2026-09-29, 5%-step sweep):
+#
+#     RPM = 15.76 * duty + 397      (R^2 = 0.997, duty >= 32%)
+#     RPM = 840 (floor)             for any duty <= 31%, including 0%
+#
+# The fan never stops, and below 32% duty it cannot go slower than 840 RPM, so
+# the whole 0-31% band is one operating point. The curve therefore idles at 31%,
+# the quietest achievable setting, and spends its entire useful output range on
+# 38-50 °C, where the fan can actually respond:
+#
+#     38 °C -> 31%  ->  840 RPM     44 °C ->  60% -> 1343 RPM
+#     41 °C -> 45%  -> 1106 RPM     47 °C ->  80% -> 1658 RPM
+#                                   50 °C -> 100% -> 1973 RPM
+#
+# The drive held 33-34 °C for a full day at the 840 RPM floor, so there is
+# nothing to gain from ramping earlier than 38 °C.
+curve = @CURVE@
+
+# Top of the fan's dead zone: the highest duty still producing minimum speed.
+# Diagnostic only: curve points at or below it are reported at startup as having
+# no distinguishable effect. It never rescales the curve.
+fan_floor_duty_percent = @FAN_FLOOR_DUTY_PERCENT@
+
+# Damping. The steepest curve segment above is 6.7 %/°C (44→47 and 47→50 °C),
+# and `drivetemp` reports whole degrees, so an undamped 1 °C dither would swing
+# the fan by ~105 RPM every poll. alpha = 0.3 at a 10 s interval is roughly a
+# 30 s time constant, negligible against a thermal system that took 15 hours to
+# move 7 °C. The deadband then absorbs the last point or two of jitter.
+smoothing_alpha = @SMOOTHING_ALPHA@
+deadband_percent = @DEADBAND_PERCENT@
+
+# Stall detection. The firmware failsafe catches a silent host; nothing else
+# catches a dead fan, and a seized bearing or a loose 12 V lead leaves every other
+# safeguard satisfied while airflow is zero. This fan's measured floor is
+# 840 RPM at any duty, so 400 is comfortably below anything normal operation can
+# produce and only a genuinely stopped fan (or a failed tachometer) trips it.
+# Reported, not acted on: more duty cannot revive a dead fan. At least 1; leave
+# the key out to disable the check.
+min_expected_rpm = @MIN_EXPECTED_RPM@
+stall_cycles = @STALL_CYCLES@
+
+# An absolute floor alone cannot catch the fault that matters most here. This fan
+# free-runs at its 840 RPM floor whenever its PWM input is held low, and 840 is
+# *above* any sane absolute floor, so a shorted drive transistor, or GPIO3 stuck
+# driving it on, leaves the fan at 840 RPM while the daemon commands 100% and
+# expects ~1973. Every safeguard reads healthy while airflow is 42% of what it
+# should be. (The opposite fault is safe: an *open* PWM line lets the fan's own
+# pull-up take it to 100%.)
+#
+# This table makes the threshold scale with the duty the fan is running at, as
+# the controller reports it before each new command. Values are from the
+# regression above rather than the raw sweep, because the regression sits
+# slightly below the measurements and a threshold should err low:
+#
+#     0-31% -> 840 RPM (floor)    50% -> 1185 RPM    100% -> 1973 RPM
+#
+# At 70% tolerance the fan must beat 588 RPM at the floor and 1381 RPM at full
+# duty, against measured 840 and 2010, which is roughly 30% margin at both ends.
+expected_rpm = @EXPECTED_RPM@
+stall_tolerance_percent = @STALL_TOLERANCE_PERCENT@

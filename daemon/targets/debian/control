@@ -1,0 +1,36 @@
+Source: fan-controllerd
+Section: utils
+Maintainer: wxx9248 <wxx9248@gmail.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ cargo (>= 1.85),
+ rustc (>= 1.85),
+Standards-Version: 4.7.4
+Homepage: https://github.com/wxx9248/PC-Fan-Controller
+Vcs-Git: https://github.com/wxx9248/PC-Fan-Controller.git
+Vcs-Browser: https://github.com/wxx9248/PC-Fan-Controller
+Rules-Requires-Root: no
+
+Package: fan-controllerd
+Architecture: linux-any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+Description: drive-temperature fan controller daemon for an ESP32-C3 board
+ Reads hard-drive temperatures from the kernel drivetemp hwmon, maps the hottest
+ drive through a configurable piecewise-linear curve, and commands fan speed
+ over USB serial to an ESP32-C3 running the matching firmware from this project.
+ .
+ Airflow survives the daemon itself. The controller holds its own failsafe and
+ forces the fan to full speed whenever the host stops sending commands, so a
+ crashed, stopped or disconnected daemon cannot leave a drive array without
+ cooling. The daemon also cross-checks the duty the controller reports against
+ the duty it asked for, watches the tachometer for a stalled fan, and reports
+ each drive against its own rated and critical limits.
+ .
+ The drivetemp kernel module is required and there is no fallback temperature
+ source, so this package arranges for the module to be loaded at boot.
+ .
+ The service is installed but left disabled. /etc/fan-controllerd.toml ships
+ with placeholder device and disk identifiers, which have to be replaced with
+ the ones for this machine before the daemon can do anything useful.

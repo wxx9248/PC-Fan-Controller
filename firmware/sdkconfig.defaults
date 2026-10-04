@@ -1,0 +1,14 @@
+# Non-sensitive build configuration, committed.
+# WiFi credentials go in sdkconfig.secrets (see sdkconfig.secrets.example).
+
+CONFIG_IDF_TARGET="esp32c3"
+
+# Route console/logging to UART0 (pins unconnected on the deployed board) and
+# disable the secondary USB Serial/JTAG console, so the USB port carries
+# exclusively the host control protocol with no log lines interleaved.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# ESP32-C3 Super Mini has 4 MB flash; single 1.5 MB app partition, no OTA.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y

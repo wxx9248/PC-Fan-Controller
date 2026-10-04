@@ -1,0 +1,5 @@
+fan-controllerd (1.0.0) unstable; urgency=medium
+
+  * Initial Debian packaging of the NAS-side daemon.
+
+ -- wxx9248 <wxx9248@gmail.com>  Sat, 03 Oct 2026 23:39:02 -0700

@@ -1,0 +1,175 @@
+#!/bin/sh
+# Render the config templates for one installation target.
+#
+# Every value that an installation target may set lives in config/targets/:
+# common.conf declares the full variable set, and each <target>.conf sets what
+# that target does differently. The templates in config/templates/ reference
+# them as @NAME@. Adding a distribution means adding one file under
+# config/targets/ and nothing else.
+#
+# common.conf leaves the install layout empty, because those paths belong to
+# each target: a target that forgets one fails the render. Every other name has
+# a default there, and any of those can be overridden for a single render with
+# --set, which is how a machine's own values (its controller serial, its disks)
+# get into the rendered files without being written into a committed one.
+#
+# The target files are sourced as POSIX shell, so values may contain spaces if
+# quoted. common.conf is also the declaration of which names exist: a template
+# referring to anything else fails the render rather than shipping a file with an
+# unsubstituted placeholder in it.
+set -eu
+
+self_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+targets_dir=$self_dir/config/targets
+templates_dir=$self_dir/config/templates
+common=$targets_dir/common.conf
+
+usage() {
+    cat >&2 <<EOF
+usage: render-config --target NAME [--set VAR=VALUE]... --outdir DIR
+           render every template
+       render-config --target NAME [--set VAR=VALUE]... --print VAR
+           print one resolved value
+       render-config --list-targets
+       render-config --list-settable
+           print the names --set accepts
+EOF
+    exit 2
+}
+
+list_targets() {
+    for f in "$targets_dir"/*.conf; do
+        name=${f##*/}; name=${name%.conf}
+        [ "$name" = common ] || echo "$name"
+    done
+}
+
+# Is $1 one of the newline-separated names in $2?
+is_listed() {
+    case "
+$2
+" in
+        *"
+$1
+"*) return 0 ;;
+    esac
+    return 1
+}
+
+# Every name common.conf declares, and those it leaves empty for each target.
+vars=$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$common" | sort -u)
+required=$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=$/\1/p' "$common" | sort -u)
+settable=$(for v in $vars; do is_listed "$v" "$required" || echo "$v"; done)
+
+target=''; outdir=''; print_var=''; sets=''
+while [ $# -gt 0 ]; do
+    case $1 in
+        --target)  target=${2:?--target needs a name}; shift 2 ;;
+        --outdir)  outdir=${2:?--outdir needs a path}; shift 2 ;;
+        --print)   print_var=${2:?--print needs a name}; shift 2 ;;
+        --set)     sets="$sets${2:?--set needs VAR=VALUE}
+"; shift 2 ;;
+        --list-targets) list_targets; exit 0 ;;
+        --list-settable) printf '%s\n' "$settable"; exit 0 ;;
+        *) usage ;;
+    esac
+done
+[ -n "$target" ] || usage
+
+target_file=$targets_dir/$target.conf
+if [ ! -f "$target_file" ]; then
+    echo "render-config: unknown target '$target'. Available: $(list_targets | tr '\n' ' ')" >&2
+    exit 1
+fi
+
+# shellcheck disable=SC1090
+. "$common"
+# shellcheck disable=SC1090
+. "$target_file"
+
+# A target file may only set what common.conf declares. The names are shell
+# identifiers, so splitting them on whitespace is exact.
+# shellcheck disable=SC2013
+for name in $(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$target_file" | sort -u); do
+    if ! is_listed "$name" "$vars"; then
+        echo "render-config: $target.conf sets '$name', which common.conf does not declare" >&2
+        exit 1
+    fi
+done
+for name in $required; do
+    eval "value=\${$name}"
+    if [ -z "$value" ]; then
+        echo "render-config: $target.conf must set $name; common.conf leaves the" \
+             "install layout to each target" >&2
+        exit 1
+    fi
+done
+
+# Overrides for this one render. Globbing is off while they are applied, since
+# a value such as ["ata-..."] is also a valid glob pattern.
+set -f
+old_ifs=$IFS
+IFS='
+'
+for assignment in $sets; do
+    name=${assignment%%=*}
+    if [ "$name" = "$assignment" ] || ! is_listed "$name" "$settable"; then
+        IFS=$old_ifs
+        # shellcheck disable=SC2086 # one name per word; globbing is off here
+        echo "render-config: cannot --set '$name'. Settable names:" $settable >&2
+        exit 1
+    fi
+    # Safe to eval: the name is one common.conf declares, and the value is only
+    # ever expanded inside an assignment.
+    value=${assignment#*=}
+    eval "$name=\$value"
+done
+IFS=$old_ifs
+set +f
+
+for v in $vars; do eval "export $v"; done
+
+if [ -n "$print_var" ]; then
+    if ! is_listed "$print_var" "$vars"; then
+        echo "render-config: '$print_var' is not declared in common.conf" >&2
+        exit 1
+    fi
+    eval "printf '%s\n' \"\${$print_var}\""
+    exit 0
+fi
+
+[ -n "$outdir" ] || usage
+mkdir -p "$outdir"
+
+for tmpl in "$templates_dir"/*.in; do
+    base=${tmpl##*/}
+    out=$outdir/${base%.in}
+    # index/substr rather than sub(): no value can be mangled by regex or
+    # replacement metacharacters this way.
+    awk -v varlist="$vars" '
+        BEGIN { n = split(varlist, v, "\n") }
+        {
+            for (i = 1; i <= n; i++) {
+                if (v[i] == "") continue
+                name = "@" v[i] "@"
+                val = ENVIRON[v[i]]
+                while ((p = index($0, name)) > 0)
+                    $0 = substr($0, 1, p - 1) val substr($0, p + length(name))
+            }
+            print
+        }
+    ' "$tmpl" > "$out"
+
+    if grep -n '@[A-Za-z_][A-Za-z0-9_]*@' "$out" >&2; then
+        echo "render-config: $out has the unresolved placeholder(s) above;" \
+             "declare them in config/targets/common.conf" >&2
+        rm -f "$out"
+        exit 1
+    fi
+    echo "$out"
+done
+
+# Which overrides this render used, one VAR=VALUE per line, so the Makefile can
+# tell at install time whether the files it is about to copy carry the values
+# given on its command line. Install never renders, since it runs as root.
+printf '%s' "$sets" > "$outdir/.overrides"

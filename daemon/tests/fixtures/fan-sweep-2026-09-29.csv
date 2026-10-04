@@ -1,0 +1,23 @@
+# Duty sweep of the deployed fan, measured 2026-09-29 in 5% steps (plus the
+# knee): the median of three tachometer readings per step. The tachometer
+# resolves 30 RPM, and below 32% duty the fan holds its 840 RPM floor.
+#
+# Shared by the daemon's stall-detection tests and the frontend mock's model
+# test, so both are checked against the same hardware rather than two copies.
+duty_percent,rpm
+0,840
+28,840
+30,840
+31,840
+32,900
+34,930
+36,960
+38,990
+40,1050
+45,1110
+50,1200
+60,1350
+70,1500
+80,1650
+90,1770
+100,2010

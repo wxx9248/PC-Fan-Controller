@@ -1,0 +1,64 @@
+#!/usr/bin/make -f
+# Packaging for the NAS-side daemon. The firmware and the status page are flashed
+# to the microcontroller, so no .deb carries them.
+#
+# Every path this package installs to comes from config/targets/debian.conf by
+# way of the top-level Makefile. Nothing here restates one, so the Debian layout
+# and the hand-built layout cannot drift apart.
+
+# No DEB_BUILD_MAINT_OPTIONS=hardening here: dpkg-buildflags exports no
+# RUSTFLAGS, so it would never reach rustc. rustc already links a PIE with full
+# RELRO and a non-executable stack by default.
+
+# A package build must not write to $HOME, and a buildd has no writable one.
+export CARGO_HOME = $(CURDIR)/debian/cargo
+
+# Leave stripping to dh_strip. Cargo's release profile strips the binary itself,
+# which ignored DEB_BUILD_OPTIONS=nostrip and left nothing for a -dbgsym package;
+# line tables are enough for that package to symbolise a backtrace.
+export CARGO_PROFILE_RELEASE_STRIP = false
+export CARGO_PROFILE_RELEASE_DEBUG = line-tables-only
+
+PKG := fan-controllerd
+
+# An official Debian build gets no network; CI normally has one, so fetching is
+# the default. Vendor the crates as README describes and pass CARGO_OFFLINE=1 for
+# a sealed build.
+ifeq ($(CARGO_OFFLINE),1)
+  CARGO_NET := --offline
+endif
+MAKE_ARGS := TARGET=debian CARGO_FLAGS="--locked --release $(CARGO_NET)"
+
+%:
+	dh $@ --buildsystem=none
+
+override_dh_auto_build:
+	$(MAKE) $(MAKE_ARGS) all
+
+# Policy requires DEB_BUILD_OPTIONS to be honoured, and nocheck means skip the
+# test suite rather than run it anyway.
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	$(MAKE) $(MAKE_ARGS) test
+endif
+
+override_dh_auto_clean:
+	$(MAKE) $(MAKE_ARGS) clean
+	rm -rf debian/cargo
+
+override_dh_auto_install:
+	$(MAKE) $(MAKE_ARGS) install DESTDIR=$(CURDIR)/debian/$(PKG)
+
+# The README and the protocol specification sit at the top of the repository, one
+# level above this source tree, so a build from the source package alone does not
+# have them. $(wildcard) ships them when they are there and nothing otherwise;
+# nothing in the package depends on them, since the man page cites PROTOCOL.md
+# upstream.
+override_dh_installdocs:
+	dh_installdocs $(wildcard ../README.md ../PROTOCOL.md)
+
+# Deliberately neither enabled nor started: the shipped config carries
+# placeholder device and disk identifiers, and Restart=always would turn that into
+# a restart loop on a fresh install. The admin edits the config, then enables it.
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start

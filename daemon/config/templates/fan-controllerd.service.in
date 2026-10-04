@@ -1,0 +1,83 @@
+# Rendered by scripts/render-config into build/<target>/. Edit this template or
+# the value set in config/targets/, never a rendered copy.
+#
+#   make                     (as yourself; the build refuses root)
+#   sudo make install
+#   sudo systemctl daemon-reload && sudo systemctl enable --now fan-controllerd
+#
+# The Debian package installs the same unit rendered for its own target, and
+# leaves it disabled until the configuration has been filled in.
+[Unit]
+Description=@SERVICE_DESCRIPTION@
+Documentation=man:fan-controllerd(8) @DOCUMENTATION_URL@
+After=local-fs.target
+
+[Service]
+# The daemon reports ready once its configuration has loaded and passed
+# validation, so `systemctl start` fails on a configuration the daemon rejects.
+# Under Type=simple it would report success and then restart every few seconds.
+Type=notify
+ExecStart=@BINDIR@/fan-controllerd --config @CONFIG_FILE@
+Restart=always
+RestartSec=@RESTART_SEC@
+
+# Restart=always only reacts to a process that EXITS. The watchdog also restarts
+# one that is alive but stuck in its own code, because it stops pinging.
+#
+# The daemon pings at the top of every loop iteration. A normal cycle between
+# two pings takes at most:
+#
+#   temperature reads  (normally milliseconds)
+#   + STATUS exchange  (<= 3 s)
+#   + PWM exchange     (<= 3 s)
+#   + poll interval    (@POLL_INTERVAL_S@ s)
+#
+# The cycle that reconnects adds a handshake and a STATUS exchange (<= 3 s
+# each), and a failed attempt is a handshake plus the backoff (<= 3 s + 15 s).
+# Each exchange bound covers writing the command as well as reading the reply.
+#
+# A failing drive is the one case this cannot help with. drivetemp gives each
+# command 10 s and up to 5 retries, so a single read can take about a minute,
+# and it sleeps uninterruptibly: the watchdog's kill lands only once the read
+# returns, when the daemon would carry on by itself anyway. The controller's
+# failsafe holds the fan at 100% in the meantime.
+WatchdogSec=@WATCHDOG_SEC@
+
+# The daemon needs no privilege. It reads its configuration and world-readable
+# sysfs (@KERNEL_MODULE@), and opens the controller's serial device, which is
+# root:dialout. So it runs as a transient unprivileged user in that group, and
+# the sandbox below takes away everything else.
+DynamicUser=yes
+SupplementaryGroups=dialout
+# Of all devices, only CDC-ACM serial ports, which is what the controller is.
+DevicePolicy=closed
+DeviceAllow=char-ttyACM rw
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+# AF_UNIX only, for the sd_notify readiness and watchdog datagrams.
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

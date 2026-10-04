@@ -1,0 +1,2 @@
+build/debian/99-fan-controller.rules
+build/debian/fan-controllerd.toml

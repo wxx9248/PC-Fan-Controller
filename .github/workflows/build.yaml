@@ -1,0 +1,216 @@
+name: Build
+
+# A push to a pull request branch rebuilds all three components. workflow_dispatch
+# is here too because the release workflow consumes a build run's artifacts, and
+# without it the only way to produce a releasable run would be to open a PR.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A second push to the same PR makes the first build's artifacts uninteresting.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Checks-out repository
+        uses: actions/checkout@v7
+
+      # Fails the whole build if any component's literal has drifted from the
+      # VERSION file, so an artifact can never be labelled with a version that
+      # something inside it disagrees with.
+      - name: Verify every component agrees with VERSION
+        run: ./scripts/version check
+
+      - name: Resolve the version
+        id: resolve
+        run: echo "version=$(./scripts/version current)" >> "$GITHUB_OUTPUT"
+
+  # Formatting and lints, on the runner's own stable toolchain. Quick, so a style
+  # slip fails in a minute rather than after the emulated package build.
+  daemon-lint:
+    name: Daemon lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checks-out repository
+        uses: actions/checkout@v7
+
+      - name: Check formatting
+        working-directory: daemon
+        run: cargo fmt --check
+
+      - name: Lint
+        working-directory: daemon
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  daemon:
+    name: Daemon (${{ matrix.platform.distro }} ${{ matrix.platform.release }} ${{ matrix.platform.arch }})
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry for now. Another platform is another entry: the packaging
+        # layout it needs lives in daemon/config/targets/ and daemon/targets/.
+        platform:
+          - os: linux
+            distro: debian
+            release: trixie
+            arch: aarch64
+            docker-platform: linux/arm64
+    steps:
+      - name: Checks-out repository
+        uses: actions/checkout@v7
+
+      # The build runs under emulation so it is the real target architecture
+      # rather than a cross-compile. That is slower but it is the thing that
+      # actually gets installed.
+      - name: Docker Setup QEMU
+        uses: docker/setup-qemu-action@v4.4.0
+
+      # Container root installs the build dependencies and nothing else. The
+      # build itself runs as a user with the runner's own uid, so no step of it
+      # has root, and everything it writes into the bind mount belongs to the
+      # runner afterwards.
+      - name: Build the Debian package
+        run: |
+          docker run --rm \
+            --platform ${{ matrix.platform.docker-platform }} \
+            -v "$PWD":/src -w /src/daemon \
+            -e BUILD_UID="$(id -u)" -e BUILD_GID="$(id -g)" \
+            ${{ matrix.platform.distro }}:${{ matrix.platform.release }} \
+            bash -euxc '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends \
+                build-essential debhelper cargo rustc ca-certificates
+              getent group "$BUILD_GID" >/dev/null || groupadd --gid "$BUILD_GID" builder
+              useradd --uid "$BUILD_UID" --gid "$BUILD_GID" --non-unique --create-home builder
+              runuser -u builder -- make deb
+            '
+
+      # dpkg-buildpackage writes one directory above the source tree, so the
+      # package lands at the repository root. Only the package itself: the build
+      # also leaves a fan-controllerd-dbgsym .deb there, which is not published.
+      - name: Collect the package
+        run: |
+          mkdir -p artifacts
+          mv ./fan-controllerd_*.deb artifacts/
+          ls -l artifacts
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v7
+        with:
+          name: fan-controllerd-${{ needs.version.outputs.version }}-${{ matrix.platform.distro }}-${{ matrix.platform.release }}-${{ matrix.platform.arch }}
+          path: artifacts/*.deb
+          if-no-files-found: error
+
+  frontend:
+    name: Status page
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checks-out repository
+        uses: actions/checkout@v7
+
+      # Before setup-node, whose pnpm cache needs the package manager present.
+      # The version comes from "packageManager" in frontend/package.json.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: frontend/package.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        working-directory: frontend
+        run: pnpm test
+
+      # Writes firmware/main/web/index.html.gz, which the firmware embeds.
+      - name: Build the page
+        working-directory: frontend
+        run: pnpm build
+
+      - name: Upload the page
+        uses: actions/upload-artifact@v7
+        with:
+          name: status-page-${{ needs.version.outputs.version }}
+          path: firmware/main/web/index.html.gz
+          if-no-files-found: error
+
+  firmware:
+    name: Firmware (esp32c3)
+    needs: [version, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checks-out repository
+        uses: actions/checkout@v7
+
+      - name: Download the page built by the frontend job
+        uses: actions/download-artifact@v8
+        with:
+          name: status-page-${{ needs.version.outputs.version }}
+          path: firmware/main/web
+
+      # The firmware build refuses to embed a page older than the sources it was
+      # built from, and it compares mtimes. An artifact download does not carry
+      # mtimes over, so without this the guard rejects a page that is in fact
+      # current.
+      - name: Mark the page newer than the sources it came from
+        run: touch firmware/main/web/index.html.gz
+
+      # The IDF image runs as root unless told otherwise. Running it as the runner's
+      # own user keeps root out of the build, and leaves nothing in the workspace
+      # the runner cannot clean up. git and the component manager need a writable
+      # HOME, which an arbitrary uid inside the image does not have.
+      - name: Resolve the runner's user
+        id: runner
+        run: echo "user=$(id -u):$(id -g)" >> "$GITHUB_OUTPUT"
+
+      # No sdkconfig.secrets exists in CI, and none should: WiFi credentials are
+      # not CI input. The image therefore builds with WiFi disabled, so the status
+      # page and mDNS are off until it is rebuilt with credentials. USB control is
+      # unaffected, and the release notes say so.
+      - name: Build the firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.1
+          target: esp32c3
+          path: firmware
+          extra_docker_args: --user ${{ steps.runner.outputs.user }} -e HOME=/tmp
+
+      - name: Collect the flashable set
+        run: |
+          mkdir -p artifacts
+          cp firmware/build/fan-controller.bin \
+             firmware/build/bootloader/bootloader.bin \
+             firmware/build/partition_table/partition-table.bin \
+             firmware/build/flasher_args.json \
+             artifacts/
+          ls -l artifacts
+
+      - name: Upload the firmware
+        uses: actions/upload-artifact@v7
+        with:
+          name: firmware-${{ needs.version.outputs.version }}-esp32c3
+          path: artifacts/
+          if-no-files-found: error
