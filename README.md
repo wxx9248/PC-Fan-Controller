@@ -358,8 +358,9 @@ refusal to drive perfectly good firmware. It changes when the protocol changes.
 
 ## Continuous integration
 
-`.github/workflows/build.yaml` runs on every push to a pull request, and can be
-dispatched by hand. Five jobs: a `version` job that fails the build if any
+`.github/workflows/build.yaml` runs on every push to a pull request and to
+master, and can be dispatched by hand. Master builds are what a release takes
+its artifacts from. Five jobs: a `version` job that fails the build if any
 component disagrees with `VERSION`; a daemon lint job running `cargo fmt --check`
 and clippy; then the daemon, the status page, whose mock tests run before it is
 built, and the firmware, which waits for the page it has to embed. The three
@@ -390,7 +391,8 @@ Two pins stay manual for the same reason. The `debian:trixie` image and the
 Dockerfile, and nothing scans those.
 
 `.github/workflows/release.yaml` is manual and takes a build run ID plus an
-increment. It publishes that run's artifacts unmodified, which is why it releases
+increment. The ID is that of the Build run for master's current head, which
+`gh run list --workflow build.yaml --branch master --limit 1` prints. It publishes that run's artifacts unmodified, which is why it releases
 the *current* `VERSION` rather than a bumped one: the version is baked into the
 `.deb` and into the firmware's app descriptor, so shipping anything else would tag
 a release whose contents disagree with it. Before publishing it asks the GitHub

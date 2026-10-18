@@ -1,20 +1,24 @@
 name: Build
 
-# A push to a pull request branch rebuilds all three components. workflow_dispatch
-# is here too because the release workflow consumes a build run's artifacts, and
-# without it the only way to produce a releasable run would be to open a PR.
+# A push to a pull request branch rebuilds all three components. So does a push
+# to master, because the release workflow only accepts a Build of the exact
+# commit it tags, and a pull request's run builds the branch head rather than the
+# commit its merge creates. workflow_dispatch is for rebuilding a commit by hand.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  push:
+    branches: [master]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 # A second push to the same PR makes the first build's artifacts uninteresting.
+# A master build is never cancelled, so every merged commit keeps a releasable run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   version:
