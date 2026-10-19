@@ -1,6 +1,6 @@
 [package]
 name = "fan-controllerd"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 # Edition 2024 needs rustc 1.85 or newer. Debian trixie ships exactly 1.85.1,
 # which is the oldest toolchain this is built with, so state the floor rather
