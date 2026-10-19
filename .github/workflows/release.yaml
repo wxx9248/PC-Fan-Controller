@@ -136,7 +136,9 @@ jobs:
 
           The Debian package targets Debian trixie on aarch64. It installs the
           service disabled, because the shipped /etc/fan-controllerd.toml names a
-          placeholder device and disk; edit it, then enable the service.
+          placeholder device and disk; edit it, then enable the service. The
+          same package is served from the apt repository at
+          https://repo.wxx9248.top/debian (see the README).
 
           The firmware archive holds the bootloader, the partition table and the
           app image. WiFi is not configured in it: CI builds without
@@ -193,3 +195,26 @@ jobs:
 
             Opened by the release workflow for run
             ${{ inputs.run_id }}.
+
+      # repo.wxx9248.top serves the .deb of the latest release as an apt
+      # repository, and only rebuilds when asked. GITHUB_TOKEN cannot reach another
+      # repository, so this needs a token of its own with Contents read and write
+      # on wxx9248/repo.wxx9248.top.
+      - name: Ask the package repository to publish this release
+        env:
+          REPO_DISPATCH_WEBHOOK_TOKEN: ${{ secrets.REPO_DISPATCH_WEBHOOK_TOKEN }}
+          REPOSITORY_NAME: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          if [ -z "$REPO_DISPATCH_WEBHOOK_TOKEN" ]; then
+            echo "::error::secret REPO_DISPATCH_WEBHOOK_TOKEN is not set, so repo.wxx9248.top was not rebuilt." \
+                 "The release itself is complete; run that site's Build and Publish Repository workflow by hand."
+            exit 1
+          fi
+          curl -L -f \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $REPO_DISPATCH_WEBHOOK_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -d "{\"event_type\": \"Build and Publish Repository (triggered by $REPOSITORY_NAME)\"}" \
+            https://api.github.com/repos/wxx9248/repo.wxx9248.top/dispatches

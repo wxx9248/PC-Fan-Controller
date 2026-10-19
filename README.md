@@ -97,7 +97,27 @@ measured sweep in `daemon/tests/fixtures/`, and its HTTP replies against
 `src/lib/status.js`, the same contract check the page applies to every reply. If
 port 8787 is taken, the mock says so and the dev server carries on without it.
 
+## Installing the daemon from the apt repository
+
+On Debian trixie on arm64, the package from the latest release is served from
+repo.wxx9248.top:
+
+```sh
+echo 'deb [trusted=yes] https://repo.wxx9248.top/debian trixie main' |
+    sudo tee /etc/apt/sources.list.d/wxx9248.list
+sudo apt update && sudo apt install fan-controllerd
+```
+
+The repository is unsigned, which is what `trusted=yes` accepts: apt relies on
+HTTPS alone to know where the package came from. Only the latest release is
+there, so older versions have to come from the GitHub releases page. It is the
+package described under [Building a Debian package](#building-a-debian-package),
+and it installs the service disabled: edit `/etc/fan-controllerd.toml`, then
+`sudo systemctl enable --now fan-controllerd`.
+
 ## Installing the daemon on the NAS
+
+To build and install from source instead:
 
 ```sh
 cd daemon
@@ -392,7 +412,8 @@ Dockerfile, and nothing scans those.
 
 `.github/workflows/release.yaml` is manual and takes a build run ID plus an
 increment. The ID is that of the Build run for master's current head, which
-`gh run list --workflow build.yaml --branch master --limit 1` prints. It publishes that run's artifacts unmodified, which is why it releases
+`gh run list --workflow build.yaml --branch master --limit 1` prints. It
+publishes that run's artifacts unmodified, which is why it releases
 the *current* `VERSION` rather than a bumped one: the version is baked into the
 `.deb` and into the firmware's app descriptor, so shipping anything else would tag
 a release whose contents disagree with it. Before publishing it asks the GitHub
@@ -401,6 +422,13 @@ and checks that the `.deb` declares the version being tagged. `VERSION` only
 moves at release time, so the version alone cannot tell two builds of the same
 cycle apart. The increment then chooses where the next cycle starts, and arrives
 as a pull request rather than a push.
+
+Its last step asks repo.wxx9248.top to rebuild, so the apt repository picks up
+the new `.deb`. That crosses into another repository, which `GITHUB_TOKEN`
+cannot do, so it needs a `REPO_DISPATCH_WEBHOOK_TOKEN` secret here: a
+fine-grained token with Contents read and write on `wxx9248/repo.wxx9248.top`.
+Without it the step fails after the release is already published, and the site
+can be rebuilt by hand from its own Actions tab.
 
 ## Verifying end to end
 
