@@ -9,6 +9,10 @@ CONFIG_IDF_TARGET="esp32c3"
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
+# IPv6 is the ESP-IDF default; pinned here because wifi_mgr.c relies on it to
+# give the mDNS responder an AAAA record (an IPv6 link-local address).
+CONFIG_LWIP_IPV6=y
+
 # ESP32-C3 Super Mini has 4 MB flash; single 1.5 MB app partition, no OTA.
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
