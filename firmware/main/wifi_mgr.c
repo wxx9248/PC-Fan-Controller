@@ -31,6 +31,8 @@ static TaskHandle_t s_reconnect_task;
 static uint32_t s_backoff_ms = WIFI_BACKOFF_INITIAL_MS;
 // Written by the event task, read by the httpd task.
 static _Atomic bool s_connected;
+// Set once before esp_wifi_start(), read only by the event task afterwards.
+static esp_netif_t *s_netif;
 
 // esp_timer dispatches every TASK-method callback from one shared task -- the
 // same task that fires the fan failsafe. esp_wifi_connect() blocks on the WiFi
@@ -94,6 +96,20 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
+#if CONFIG_LWIP_IPV6
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
+        // Without an IPv6 address the mDNS responder has no AAAA record and
+        // sends no NSEC to say so: it answers an AAAA question with only the A
+        // record. Resolvers that match records to the question, systemd-resolved
+        // among them, then wait out their full timeout for every AAAA lookup of
+        // the .local name. A link-local address gives them a real AAAA answer.
+        // It needs the netif up, which the default STA handler (registered
+        // before this one, so run first) has just done. Redone on every
+        // association, since a disconnect takes the netif down and drops it.
+        if (esp_netif_create_ip6_linklocal(s_netif) != ESP_OK) {
+            ESP_LOGW(TAG, "cannot create an IPv6 link-local address; .local AAAA lookups will stall");
+        }
+#endif
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         atomic_store(&s_connected, false);
         ESP_LOGW(TAG, "disconnected, retrying in %lu ms", (unsigned long)s_backoff_ms);
@@ -157,6 +173,7 @@ bool wifi_mgr_start(void)
     esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_WIFI_STA();
     esp_netif_t *netif = esp_netif_new(&netif_cfg);
     TRY(netif ? ESP_OK : ESP_ERR_NO_MEM, "esp_netif_new");
+    s_netif = netif;
     TRY(esp_netif_attach_wifi_station(netif), "esp_netif_attach_wifi_station");
     TRY(esp_wifi_set_default_wifi_sta_handlers(), "esp_wifi_set_default_wifi_sta_handlers");
     if (esp_netif_set_hostname(netif, CONFIG_FAN_HOSTNAME) != ESP_OK) {
