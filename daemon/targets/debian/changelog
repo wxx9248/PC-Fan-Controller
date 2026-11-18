@@ -1,3 +1,9 @@
+fan-controllerd (1.0.2) unstable; urgency=medium
+
+  * Release 1.0.2 (was 1.0.1).
+
+ -- wxx9248 <wxx9248@gmail.com>  Wed, 18 Nov 2026 10:00:33 +0000
+
 fan-controllerd (1.0.1) unstable; urgency=medium
 
   * Release 1.0.1 (was 1.0.0).
